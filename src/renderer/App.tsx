@@ -1,16 +1,18 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   MemoryRouter as Router,
   Routes,
   Route,
   useNavigate,
 } from 'react-router-dom';
+import { useStore } from './store/useStore';
 import Layout from './components/Layout';
 import FocusScreen from './components/FocusScreen';
 import GoalsScreen from './components/GoalsScreen';
 import TodosScreen from './components/TodosScreen';
 import ProgressScreen from './components/ProgressScreen';
 import SettingsScreen from './components/SettingsScreen';
+import OnboardingFlow from './components/OnboardingFlow';
 import './App.css';
 import DockWindow from './components/DockWindow';
 
@@ -28,6 +30,19 @@ function NavigateListener() {
 }
 
 function AppContent() {
+  const { state } = useStore();
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  useEffect(() => {
+    if (state !== null && !state.hasCompletedOnboarding) {
+      setShowOnboarding(true);
+    }
+  }, [state]);
+
+  if (showOnboarding) {
+    return <OnboardingFlow onComplete={() => setShowOnboarding(false)} />;
+  }
+
   return (
     <Router>
       <NavigateListener />

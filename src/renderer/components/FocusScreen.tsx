@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { ChevronDown, Target, Play } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -19,6 +20,7 @@ import {
 import { useStore } from '../store/useStore';
 import { useTimer, PRESETS } from '../hooks/useTimer';
 import { computeStreak } from '../lib/streak';
+import ReflectionPrompt, { type Mood } from './ReflectionPrompt';
 
 function generateId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -34,6 +36,7 @@ export default function FocusScreen() {
     sendTimerStateUpdate,
     startAppTracking,
     stopAppTracking,
+    refresh,
   } = useStore();
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const sessionContextRef = useRef<{
@@ -41,9 +44,15 @@ export default function FocusScreen() {
     goalId?: string;
     taskName: string;
   }>({ taskName: '' });
+  const [pendingReflection, setPendingReflection] = useState<{
+    duration: number;
+    taskName?: string;
+    sessionId: string;
+  } | null>(null);
 
   const handleSessionComplete = (duration: number, type: 'focus' | 'break') => {
     const ctx = sessionContextRef.current;
+    const sessionId = generateId();
     // Stop app tracking when session ends
     if (type === 'focus') stopAppTracking();
     const prefs = state?.userPrefs;
@@ -75,7 +84,7 @@ export default function FocusScreen() {
       }
     }
     addSession({
-      id: generateId(),
+      id: sessionId,
       taskId: ctx.taskId,
       goalId: ctx.goalId,
       taskName: ctx.taskName || undefined,
@@ -85,14 +94,22 @@ export default function FocusScreen() {
       type,
       completed: true,
     });
+    if (type === 'focus') {
+      setPendingReflection({
+        duration,
+        taskName: ctx.taskName || undefined,
+        sessionId,
+      });
+    }
   };
 
   const handleStopEarly = (elapsed: number, type: 'focus' | 'break') => {
     const ctx = sessionContextRef.current;
+    const sessionId = generateId();
     // Stop app tracking when session stopped early
     if (type === 'focus') stopAppTracking();
     addSession({
-      id: generateId(),
+      id: sessionId,
       taskId: ctx.taskId,
       goalId: ctx.goalId,
       taskName: ctx.taskName || undefined,
@@ -102,7 +119,30 @@ export default function FocusScreen() {
       type,
       completed: false,
     });
+    if (type === 'focus') {
+      setPendingReflection({
+        duration: elapsed,
+        taskName: ctx.taskName || undefined,
+        sessionId,
+      });
+    }
   };
+
+  const handleReflectionSave = useCallback(
+    async (mood: Mood, note: string) => {
+      if (!pendingReflection) return;
+      await window.electron?.ipcRenderer?.invoke?.(
+        'store:update-session' as Parameters<
+          typeof window.electron.ipcRenderer.invoke
+        >[0],
+        pendingReflection.sessionId,
+        { mood, reflection: note },
+      );
+      await refresh();
+      setPendingReflection(null);
+    },
+    [pendingReflection, refresh],
+  );
 
   const {
     state: timerState,
@@ -120,6 +160,14 @@ export default function FocusScreen() {
   });
 
   const currentTaskName = state?.currentTaskName ?? '';
+  // When app window opens and live timer is active from dock, sync visual state
+  // This is informational only — the dock owns the live timer state
+  // FocusScreen continues to own the pomodoro countdown timer (useTimer)
+  // These are two separate concerns:
+  //   - liveTimer = elapsed-up session tracker (dock-owned)
+  //   - useTimer = pomodoro countdown (FocusScreen-owned)
+  // They should be kept separate to avoid conflicts.
+  const { liveTimer } = state ?? {};
   const tasks = useMemo(() => state?.tasks ?? [], [state?.tasks]);
   const activeTasks = useMemo(
     () => tasks.filter((task) => !task.completedAt),
@@ -316,6 +364,27 @@ export default function FocusScreen() {
 
   return (
     <div className="flex flex-col items-center animate-fade-in-up">
+      {/* Live timer sync banner — shown when dock started a session */}
+      {liveTimer?.isActive && timerState === 'idle' && (
+        <div className="w-full px-1 mb-4">
+          <div className="glass-surface rounded-xl p-3 flex items-center gap-3">
+            <div className="w-2 h-2 rounded-full bg-primary animate-pulse flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] text-muted-foreground/60 m-0">
+                Session active from dock
+              </p>
+              <p className="text-[13px] font-medium m-0 truncate">
+                {liveTimer.taskName || 'Focus session'}
+              </p>
+            </div>
+            <span className="text-[13px] font-semibold tabular-nums text-primary">
+              {Math.floor(liveTimer.elapsed / 60)}:
+              {String(liveTimer.elapsed % 60).padStart(2, '0')}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* ─── SVG gradient defs (hidden) ─── */}
       <svg width="0" height="0" className="absolute">
         <defs>
@@ -715,6 +784,17 @@ export default function FocusScreen() {
           </CollapsibleContent>
         </Collapsible>
       </div>
+
+      <AnimatePresence>
+        {pendingReflection && (
+          <ReflectionPrompt
+            sessionDuration={pendingReflection.duration}
+            taskName={pendingReflection.taskName}
+            onSave={handleReflectionSave}
+            onSkip={() => setPendingReflection(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

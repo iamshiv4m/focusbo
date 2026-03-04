@@ -19,6 +19,7 @@ export interface Task {
   notes: Note[];
   priority?: Priority;
   completedAt?: number;
+  dueDate?: number;
 }
 
 export interface Session {
@@ -31,6 +32,8 @@ export interface Session {
   duration: number;
   type: 'focus' | 'break';
   completed?: boolean; // true = ran to completion, false = stopped early; undefined = legacy (treat as completed)
+  mood?: 'great' | 'okay' | 'rough';
+  reflection?: string;
 }
 
 export interface AppUsageEntry {
@@ -75,6 +78,29 @@ export interface TimerStateUpdate {
   taskName: string;
 }
 
+export interface LiveTimerState {
+  isActive: boolean;
+  status: 'idle' | 'running' | 'paused' | 'break';
+  taskName: string;
+  goalId?: string;
+  goalName?: string;
+  elapsed: number;
+  breakElapsed: number;
+  startedAt?: number;
+  breaks: number;
+  mode: 'focus' | 'break';
+}
+
+export const DEFAULT_LIVE_TIMER: LiveTimerState = {
+  isActive: false,
+  status: 'idle',
+  taskName: '',
+  elapsed: 0,
+  breakElapsed: 0,
+  breaks: 0,
+  mode: 'focus',
+};
+
 export type WindowState = 'collapsed' | 'options';
 
 export interface AppState {
@@ -87,6 +113,8 @@ export interface AppState {
   theme: 'dark' | 'light';
   windowState: WindowState;
   userPrefs: UserPrefs;
+  liveTimer: LiveTimerState;
+  hasCompletedOnboarding: boolean;
 }
 
 export const DEFAULT_APP_STATE: AppState = {
@@ -99,4 +127,6 @@ export const DEFAULT_APP_STATE: AppState = {
   theme: 'dark',
   windowState: 'collapsed',
   userPrefs: DEFAULT_USER_PREFS,
+  liveTimer: DEFAULT_LIVE_TIMER,
+  hasCompletedOnboarding: false,
 };

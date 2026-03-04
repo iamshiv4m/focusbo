@@ -7,6 +7,7 @@ import type {
   AppUsageEntry,
   UserPrefs,
   TimerStateUpdate,
+  LiveTimerState,
 } from '../../types';
 
 const invoke = window.electron?.ipcRenderer?.invoke;
@@ -44,6 +45,12 @@ export function useStore() {
   const setTheme = useCallback(async (theme: 'dark' | 'light') => {
     if (!invoke) return;
     const data = await invoke('store:set-theme', theme);
+    setState(data);
+  }, []);
+
+  const completeOnboarding = useCallback(async () => {
+    if (!invoke) return;
+    const data = await invoke('onboarding:complete');
     setState(data);
   }, []);
 
@@ -176,6 +183,104 @@ export function useStore() {
     return (data as AppUsageEntry[]) ?? [];
   }, []);
 
+  const getLiveTimer = useCallback(async (): Promise<LiveTimerState | null> => {
+    if (!invoke) return null;
+    return invoke('live-timer:get') as Promise<LiveTimerState>;
+  }, []);
+
+  const startLiveTimer = useCallback(
+    async (payload: {
+      taskName: string;
+      goalId?: string;
+      goalName?: string;
+    }): Promise<LiveTimerState | null> => {
+      if (!invoke) return null;
+      const result = (await invoke(
+        'live-timer:start',
+        payload,
+      )) as LiveTimerState;
+      setState((prev) => (prev ? { ...prev, liveTimer: result } : prev));
+      return result;
+    },
+    [],
+  );
+
+  const pauseLiveTimer = useCallback(async () => {
+    if (!invoke) return;
+    const result = (await invoke('live-timer:pause')) as LiveTimerState;
+    setState((prev) => (prev ? { ...prev, liveTimer: result } : prev));
+  }, []);
+
+  const resumeLiveTimer = useCallback(async () => {
+    if (!invoke) return;
+    const result = (await invoke('live-timer:resume')) as LiveTimerState;
+    setState((prev) => (prev ? { ...prev, liveTimer: result } : prev));
+  }, []);
+
+  const breakLiveTimer = useCallback(async () => {
+    if (!invoke) return;
+    const result = (await invoke('live-timer:break')) as LiveTimerState;
+    setState((prev) => (prev ? { ...prev, liveTimer: result } : prev));
+  }, []);
+
+  const endBreakLiveTimer = useCallback(async () => {
+    if (!invoke) return;
+    const result = (await invoke('live-timer:end-break')) as LiveTimerState;
+    setState((prev) => (prev ? { ...prev, liveTimer: result } : prev));
+  }, []);
+
+  const stopLiveTimer = useCallback(async () => {
+    if (!invoke) return null;
+    const finalState = (await invoke('live-timer:stop')) as LiveTimerState;
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            liveTimer: {
+              isActive: false,
+              status: 'idle',
+              taskName: '',
+              elapsed: 0,
+              breakElapsed: 0,
+              breaks: 0,
+              mode: 'focus',
+            },
+          }
+        : prev,
+    );
+    return finalState;
+  }, []);
+
+  const tickLiveTimer = useCallback(
+    async (elapsed: number, breakElapsed: number) => {
+      if (!invoke) return;
+      await invoke('live-timer:tick', elapsed, breakElapsed);
+    },
+    [],
+  );
+
+  const editLiveTimerTask = useCallback(async (taskName: string) => {
+    if (!invoke) return;
+    const result = (await invoke(
+      'live-timer:edit-task',
+      taskName,
+    )) as LiveTimerState;
+    setState((prev) => (prev ? { ...prev, liveTimer: result } : prev));
+  }, []);
+
+  useEffect(() => {
+    const unsub = window.electron?.ipcRenderer?.on?.(
+      'live-timer:update' as Parameters<
+        typeof window.electron.ipcRenderer.on
+      >[0],
+      (data: unknown) => {
+        const timerState = data as LiveTimerState;
+        setState((prev) => (prev ? { ...prev, liveTimer: timerState } : prev));
+      },
+    );
+    return unsub;
+  }, []);
+
   return {
     state,
     setWindowState,
@@ -183,6 +288,7 @@ export function useStore() {
     closeSecondary,
     refresh,
     setTheme,
+    completeOnboarding,
     setCurrentTaskName,
     setCurrentFocusGoalId,
     addGoal,
@@ -200,5 +306,14 @@ export function useStore() {
     startAppTracking,
     stopAppTracking,
     getAppUsageData,
+    getLiveTimer,
+    startLiveTimer,
+    pauseLiveTimer,
+    resumeLiveTimer,
+    breakLiveTimer,
+    endBreakLiveTimer,
+    stopLiveTimer,
+    tickLiveTimer,
+    editLiveTimerTask,
   };
 }

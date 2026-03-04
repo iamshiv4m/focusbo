@@ -10,6 +10,9 @@ A desktop focus-tracking app for employees. Timer-first, minimal friction — st
 - **Todos** — Add tasks, mark done, link to goals
 - **Notes** — Attach notes to tasks
 - **Progress graph** — Visualize focus time per day/week
+- **Settings** — Theme, daily goal, notifications, sound, shortcuts, and desktop preferences
+- **App usage tracking** — Optional local tracking of foreground apps during focus sessions
+- **Desktop integration** — Menu bar timer, global shortcuts, and launch at login
 - **Offline-first** — All data stored locally via electron-store
 - **Dark & light mode** — Apple Liquid Glass UI with theme toggle
 
@@ -36,14 +39,14 @@ A desktop focus-tracking app for employees. Timer-first, minimal friction — st
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
-│  App Window (380×560)                                    │
-│  Focus | Goals | Todos | Progress                        │
+│  App Window (440×780, frameless)                         │
+│  Focus | Goals | Todos | Progress | Settings             │
 │  Full app with timer, nav, content                       │
 └─────────────────────────────────────────────────────────┘
 ```
 
 - **Dock window**: Frameless, always-on-top, right-edge. Collapsed shows play icon; click expands to options (Focus, Goals, Todos, Progress). Click option opens app window.
-- **App window**: Framed, full UI. Loads when user picks an option from dock.
+- **App window**: Frameless, full UI. Loads when user picks an option from dock.
 - **Single bundle**: Both windows load the same `index.html`; `window.location.hash` (`#dock` or `#app`) selects DockWindow vs full app.
 
 ### Project Structure
@@ -76,6 +79,14 @@ Main (store.ts)      ←  electron-store (JSON)      ←  getAppState()
 - **Store**: Goals, tasks, sessions, theme, windowState in electron-store
 - **IPC**: Renderer calls `invoke()` for mutations; main handles and persists
 - **Navigation**: Main sends `navigate-to` to app window when opening from dock
+
+### Current Routes
+
+- `/` — Focus screen (timer and current session controls)
+- `/goals` — Goals management
+- `/todos` — Todos and notes
+- `/progress` — Focus analytics and trends
+- `/settings` — Theme and desktop preferences
 
 ## Theming
 

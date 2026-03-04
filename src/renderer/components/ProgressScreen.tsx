@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState, useCallback } from 'react';
 import {
   BarChart,
   Bar,
@@ -6,504 +6,396 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  CartesianGrid,
+  Cell,
 } from 'recharts';
-import { Clock, Flame, Monitor, Target, TrendingUp, Zap } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import {
+  Target,
+  TrendingUp,
+  Zap,
+  Coffee,
+  Award,
+  Share2,
+  Download,
+} from 'lucide-react';
 import { useStore } from '../store/useStore';
-import { computeStreak } from '../lib/streak';
-import type { AppUsageEntry } from '../../types';
+import { generateShareCard } from '../lib/shareCard';
 
-function getDateKey(ts: number) {
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+type Period = 'week' | 'lastWeek' | 'allTime';
+
+const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function getWeekRange(weeksAgo = 0) {
+  const now = new Date();
+  const dayOfWeek = now.getDay();
+  const startOfWeek = new Date(now);
+  startOfWeek.setDate(now.getDate() - dayOfWeek - weeksAgo * 7);
+  startOfWeek.setHours(0, 0, 0, 0);
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 6);
+  endOfWeek.setHours(23, 59, 59, 999);
+  return { start: startOfWeek.getTime(), end: endOfWeek.getTime() };
 }
-
-function getDateRange(days: number) {
-  const dates: string[] = [];
-  for (let i = days - 1; i >= 0; i -= 1) {
-    const day = new Date();
-    day.setHours(0, 0, 0, 0);
-    day.setDate(day.getDate() - i);
-    dates.push(getDateKey(day.getTime()));
-  }
-  return dates;
-}
-
-function formatDuration(seconds: number) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
-}
-
-function formatMinutes(mins: number) {
-  const h = Math.floor(mins / 60);
-  const m = Math.round(mins % 60);
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
-}
-
-function timeAgo(ts: number) {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days === 1) return 'Yesterday';
-  return `${days}d ago`;
-}
-
-type Range = '7d' | '30d';
 
 export default function ProgressScreen() {
-  const { state, getAppUsageData } = useStore();
-  const [range, setRange] = useState<Range>('7d');
-  const [appUsage, setAppUsage] = useState<AppUsageEntry[]>([]);
+  const { state } = useStore();
+  const [period, setPeriod] = useState<Period>('week');
+  const [sharing, setSharing] = useState(false);
+  const [sharePreview, setSharePreview] = useState<string | null>(null);
+
   const sessions = useMemo(() => state?.sessions ?? [], [state?.sessions]);
-  const dailyGoalMinutes = state?.userPrefs?.dailyFocusGoalMinutes ?? 120;
-  const trackAppUsage = state?.userPrefs?.trackAppUsage ?? true;
+  const goals = useMemo(() => state?.goals ?? [], [state?.goals]);
 
-  // Fetch app usage data
-  useEffect(() => {
-    if (trackAppUsage) {
-      getAppUsageData().then(setAppUsage);
-    }
-  }, [getAppUsageData, trackAppUsage, state?.sessions]);
-
-  const rangeDays = range === '7d' ? 7 : 30;
-  const rangeLabel = range === '7d' ? '7 days' : '30 days';
-
-  // Today's stats
-  const todayKey = getDateKey(Date.now());
-  const todayStats = useMemo(() => {
-    const todaySessions = sessions.filter(
-      (s) => getDateKey(s.startTime) === todayKey,
+  const periodSessions = useMemo(() => {
+    if (period === 'allTime') return sessions.filter((s) => s.type === 'focus');
+    const weeksAgo = period === 'lastWeek' ? 1 : 0;
+    const { start, end } = getWeekRange(weeksAgo);
+    return sessions.filter(
+      (s) => s.type === 'focus' && s.startTime >= start && s.startTime <= end,
     );
-    const focusSeconds = todaySessions
-      .filter((s) => s.type === 'focus')
-      .reduce((sum, s) => sum + s.duration, 0);
-    const focusCount = todaySessions.filter((s) => s.type === 'focus').length;
-    return { focusMinutes: focusSeconds / 60, focusCount };
-  }, [sessions, todayKey]);
+  }, [sessions, period]);
 
-  const dailyGoalProgress =
-    dailyGoalMinutes > 0
-      ? Math.min(1, todayStats.focusMinutes / dailyGoalMinutes)
-      : 0;
-
-  // Range-filtered data
-  const rangeDates = useMemo(() => getDateRange(rangeDays), [rangeDays]);
-  const rangeCutoff = useMemo(
-    () => new Date(`${rangeDates[0]}T00:00:00`).getTime(),
-    [rangeDates],
-  );
-  const rangeSessions = useMemo(
-    () => sessions.filter((s) => s.startTime >= rangeCutoff),
-    [sessions, rangeCutoff],
-  );
-
-  const chartData = useMemo(() => {
-    const byDate: Record<string, { focus: number; break: number }> = {};
-    rangeSessions.forEach((s) => {
-      const key = getDateKey(s.startTime);
-      if (!byDate[key]) byDate[key] = { focus: 0, break: 0 };
-      if (s.type === 'focus') byDate[key].focus += s.duration;
-      else byDate[key].break += s.duration;
-    });
-
-    return rangeDates.map((date) => {
-      const data = byDate[date] ?? { focus: 0, break: 0 };
-      const d = new Date(`${date}T00:00:00`);
+  const dailyData = useMemo(() => {
+    if (period === 'allTime')
+      return [] as { day: string; minutes: number; isToday: boolean }[];
+    const weeksAgo = period === 'lastWeek' ? 1 : 0;
+    const { start } = getWeekRange(weeksAgo);
+    return DAY_LABELS.map((day, i) => {
+      const dayStart = new Date(start);
+      dayStart.setDate(dayStart.getDate() + i);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setHours(23, 59, 59, 999);
+      const dayMinutes = sessions
+        .filter(
+          (s) =>
+            s.type === 'focus' &&
+            s.startTime >= dayStart.getTime() &&
+            s.startTime <= dayEnd.getTime(),
+        )
+        .reduce((sum, s) => sum + s.duration / 60, 0);
       return {
-        date,
-        day:
-          rangeDays <= 7
-            ? d.toLocaleDateString(undefined, { weekday: 'short' })
-            : `${d.getMonth() + 1}/${d.getDate()}`,
-        focus: Math.round(data.focus / 60),
-        break: Math.round(data.break / 60),
+        day,
+        minutes: Math.round(dayMinutes),
+        isToday: i === new Date().getDay() && period === 'week',
       };
     });
-  }, [rangeSessions, rangeDates, rangeDays]);
+  }, [sessions, period]);
 
-  const rangeFocusSessions = useMemo(
-    () => rangeSessions.filter((s) => s.type === 'focus'),
-    [rangeSessions],
+  const totalMinutes = useMemo(
+    () => periodSessions.reduce((sum, s) => sum + s.duration / 60, 0),
+    [periodSessions],
   );
+  const totalSessions = periodSessions.length;
+  const avgSessionMinutes =
+    totalSessions > 0 ? Math.round(totalMinutes / totalSessions) : 0;
 
-  const totalFocusMins = useMemo(
-    () => rangeFocusSessions.reduce((sum, s) => sum + s.duration / 60, 0),
-    [rangeFocusSessions],
-  );
+  const bestDay = useMemo(() => {
+    if (!dailyData.length) return null;
+    const best = dailyData.reduce((a, b) => (a.minutes > b.minutes ? a : b));
+    return best.minutes > 0 ? best : null;
+  }, [dailyData]);
 
-  const totalBreakMins = useMemo(
-    () =>
-      rangeSessions
-        .filter((s) => s.type === 'break')
-        .reduce((sum, s) => sum + s.duration / 60, 0),
-    [rangeSessions],
-  );
+  const goalBreakdown = useMemo(() => {
+    return goals
+      .map((goal) => {
+        const goalMinutes = periodSessions
+          .filter((s) => s.goalId === goal.id)
+          .reduce((sum, s) => sum + s.duration / 60, 0);
+        return { goal, minutes: Math.round(goalMinutes) };
+      })
+      .filter((g) => g.minutes > 0)
+      .sort((a, b) => b.minutes - a.minutes)
+      .slice(0, 5);
+  }, [goals, periodSessions]);
 
-  const streak = useMemo(() => computeStreak(sessions), [sessions]);
-
-  const completedCount = useMemo(
-    () => rangeFocusSessions.filter((s) => s.completed !== false).length,
-    [rangeFocusSessions],
-  );
-  const adherence =
-    rangeFocusSessions.length > 0
-      ? Math.round((completedCount / rangeFocusSessions.length) * 100)
-      : 0;
-
-  const avgDailyMins = totalFocusMins / rangeDays;
-
-  // Time by task — horizontal bars
-  const timeByTask = useMemo(() => {
-    const byKey: Record<string, { name: string; duration: number }> = {};
-    rangeFocusSessions.forEach((s) => {
-      const name = s.taskName?.trim() || 'Unnamed';
-      if (!byKey[name]) byKey[name] = { name, duration: 0 };
-      byKey[name].duration += s.duration;
+  const moodCounts = useMemo(() => {
+    const counts = { great: 0, okay: 0, rough: 0, none: 0 };
+    periodSessions.forEach((s) => {
+      if (s.mood === 'great') counts.great += 1;
+      else if (s.mood === 'okay') counts.okay += 1;
+      else if (s.mood === 'rough') counts.rough += 1;
+      else counts.none += 1;
     });
-    return Object.values(byKey)
-      .sort((a, b) => b.duration - a.duration)
-      .slice(0, 8);
-  }, [rangeFocusSessions]);
+    return counts;
+  }, [periodSessions]);
 
-  const maxTaskDuration = timeByTask[0]?.duration ?? 1;
-
-  // App usage — aggregate by app name for current range
-  const appUsageByApp = useMemo(() => {
-    if (!appUsage.length) return [];
-    const rangeUsage = appUsage.filter((e) => e.startTime >= rangeCutoff);
-    const byApp: Record<string, { name: string; duration: number }> = {};
-    rangeUsage.forEach((e) => {
-      if (!byApp[e.appName])
-        byApp[e.appName] = { name: e.appName, duration: 0 };
-      byApp[e.appName].duration += e.duration;
-    });
-    return Object.values(byApp)
-      .sort((a, b) => b.duration - a.duration)
-      .slice(0, 10);
-  }, [appUsage, rangeCutoff]);
-
-  const maxAppDuration = appUsageByApp[0]?.duration ?? 1;
-  const totalAppSeconds = appUsageByApp.reduce((s, a) => s + a.duration, 0);
-
-  const recentSessions = useMemo(
-    () => [...sessions].sort((a, b) => b.startTime - a.startTime).slice(0, 12),
-    [sessions],
-  );
-
-  // Custom tooltip component
-  const CustomTooltip = ({
-    active,
-    payload,
-    label,
-  }: {
-    active?: boolean;
-    payload?: Array<{
-      value: number;
-      dataKey: string;
-      payload: { date: string };
-    }>;
-    label?: string;
-  }) => {
-    if (!active || !payload?.length) return null;
-    const date = payload[0]?.payload?.date;
-    const dateStr = date
-      ? new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
-          weekday: 'short',
-          month: 'short',
-          day: 'numeric',
-        })
-      : label;
-    return (
-      <div className="chart-tooltip">
-        <p className="text-xs font-medium text-foreground m-0 mb-1">
-          {dateStr}
-        </p>
-        {payload.map((entry) => (
-          <p
-            key={entry.dataKey}
-            className="text-[11px] text-muted-foreground m-0"
-          >
-            <span
-              className="inline-block w-2 h-2 rounded-full mr-1.5"
-              style={{
-                background:
-                  entry.dataKey === 'focus'
-                    ? 'var(--primary)'
-                    : 'var(--muted-foreground)',
-              }}
-            />
-            {entry.dataKey === 'focus' ? 'Focus' : 'Break'}: {entry.value}m
-          </p>
-        ))}
-      </div>
+  const streak = useMemo(() => {
+    const focusDays = new Set(
+      sessions
+        .filter((s) => s.type === 'focus')
+        .map((s) => {
+          const d = new Date(s.startTime);
+          return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+        }),
     );
-  };
+
+    let count = 0;
+    const today = new Date();
+    for (let i = 0; i < 365; i += 1) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      if (focusDays.has(key)) count += 1;
+      else if (i > 0) break;
+    }
+    return count;
+  }, [sessions]);
+
+  const insight = useMemo(() => {
+    if (totalMinutes === 0)
+      return 'No sessions this period yet. Start your first focus session!';
+    if (bestDay && period !== 'allTime')
+      return `Your best day was ${bestDay.day} with ${bestDay.minutes} minutes of focus. 🔥`;
+    if (moodCounts.great > moodCounts.rough)
+      return `${moodCounts.great} great sessions this period. You're in flow! 💪`;
+    if (streak >= 7)
+      return `${streak}-day streak! Consistency is your superpower. ⚡`;
+    return `${Math.round((totalMinutes / 60) * 10) / 10} hours of deep work. Keep building the habit!`;
+  }, [totalMinutes, bestDay, period, moodCounts, streak]);
+
+  const tabs: { value: Period; label: string }[] = [
+    { value: 'week', label: 'This week' },
+    { value: 'lastWeek', label: 'Last week' },
+    { value: 'allTime', label: 'All time' },
+  ];
+
+  const handleShare = useCallback(async () => {
+    setSharing(true);
+    try {
+      const dataUrl = await generateShareCard({
+        totalMinutes: Math.round(totalMinutes),
+        totalSessions,
+        streak,
+        bestDayLabel: bestDay?.day ?? '',
+        bestDayMinutes: bestDay?.minutes ?? 0,
+        moodGreat: moodCounts.great,
+        moodOkay: moodCounts.okay,
+        moodRough: moodCounts.rough,
+        periodLabel: tabs.find((t) => t.value === period)?.label ?? '',
+        dailyData: period !== 'allTime' ? dailyData : [],
+      });
+      setSharePreview(dataUrl);
+    } finally {
+      setSharing(false);
+    }
+  }, [
+    totalMinutes,
+    totalSessions,
+    streak,
+    bestDay,
+    moodCounts,
+    period,
+    dailyData,
+    tabs,
+  ]);
+
+  const handleDownload = useCallback(() => {
+    if (!sharePreview) return;
+    const a = document.createElement('a');
+    a.href = sharePreview;
+    a.download = `focusbo-${period}-${Date.now()}.png`;
+    a.click();
+  }, [sharePreview, period]);
 
   return (
-    <div className="flex flex-col gap-4 animate-fade-in-up">
-      {/* Header + Range toggle */}
-      <div className="px-1 flex items-start justify-between">
-        <div>
-          <h2 className="text-base font-semibold tracking-tight m-0">
-            Progress
-          </h2>
-          <p className="text-xs text-muted-foreground m-0 mt-0.5">
-            Track your focus, consistency, and trends.
-          </p>
-        </div>
-        <div className="flex gap-1 glass-surface rounded-lg p-0.5">
-          {(['7d', '30d'] as const).map((r) => (
-            <Button
-              key={r}
-              variant={range === r ? 'default' : 'ghost'}
-              size="sm"
-              onClick={() => setRange(r)}
-              className={`h-6 px-2.5 text-[11px] rounded-md ${
-                range === r ? '' : 'text-muted-foreground'
-              }`}
+    <div className="flex flex-col animate-fade-in-up">
+      <div className="flex items-center gap-2 mb-5">
+        <div className="flex gap-1 bg-white/[0.04] rounded-xl p-1 flex-1">
+          {tabs.map((tab) => (
+            <button
+              key={tab.value}
+              onClick={() => setPeriod(tab.value)}
+              className="flex-1 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer border-0"
+              style={{
+                background:
+                  period === tab.value
+                    ? 'rgba(255,255,255,0.08)'
+                    : 'transparent',
+                color:
+                  period === tab.value
+                    ? 'var(--foreground)'
+                    : 'rgba(255,255,255,0.4)',
+              }}
             >
-              {r === '7d' ? '7D' : '30D'}
-            </Button>
+              {tab.label}
+            </button>
           ))}
         </div>
+        <button
+          onClick={handleShare}
+          disabled={sharing || totalSessions === 0}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border-0 cursor-pointer disabled:opacity-30 transition-all"
+          style={{
+            background: 'rgba(10, 132, 255, 0.1)',
+            color: '#0a84ff',
+            border: '1px solid rgba(10, 132, 255, 0.2)',
+          }}
+        >
+          <Share2 className="w-3 h-3" />
+          {sharing ? 'Generating...' : 'Share'}
+        </button>
       </div>
 
-      {/* Today's progress card */}
-      <div className="glass-surface rounded-xl p-4">
-        <div className="flex items-center justify-between mb-2.5">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
-              <Zap className="h-3.5 w-3.5 text-primary" />
-            </div>
-            <div>
-              <p className="text-[13px] font-medium m-0">Today</p>
-              <p className="text-[11px] text-muted-foreground m-0">
-                {Math.round(todayStats.focusMinutes)}m focused ·{' '}
-                {todayStats.focusCount} session
-                {todayStats.focusCount !== 1 ? 's' : ''}
-              </p>
-            </div>
-          </div>
-          <span className="text-sm font-semibold text-foreground/80">
-            {Math.round(dailyGoalProgress * 100)}%
-          </span>
-        </div>
-        <div className="h-2 w-full rounded-full bg-white/[0.06] overflow-hidden">
-          <div
-            className="h-full rounded-full transition-all duration-700 ease-out"
-            style={{
-              width: `${dailyGoalProgress * 100}%`,
-              background:
-                dailyGoalProgress >= 1
-                  ? 'linear-gradient(90deg, #30d158, #34c759)'
-                  : 'linear-gradient(90deg, var(--primary), #5e5ce6)',
-            }}
-          />
-        </div>
-        <p className="text-[10px] text-muted-foreground/50 m-0 mt-1.5">
-          Goal: {formatMinutes(dailyGoalMinutes)} per day
-        </p>
+      <div
+        className="rounded-xl px-3.5 py-3 mb-4 text-xs text-muted-foreground leading-relaxed"
+        style={{
+          background: 'rgba(10, 132, 255, 0.07)',
+          border: '1px solid rgba(10, 132, 255, 0.15)',
+        }}
+      >
+        {insight}
       </div>
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-3 gap-2 mb-4">
         {[
           {
-            icon: Clock,
             label: 'Focus time',
-            value: formatMinutes(totalFocusMins),
-            sublabel: rangeLabel,
+            value: `${Math.round((totalMinutes / 60) * 10) / 10}h`,
+            icon: Zap,
           },
+          { label: 'Sessions', value: String(totalSessions), icon: TrendingUp },
           {
-            icon: Target,
-            label: 'Sessions',
-            value: String(rangeFocusSessions.length),
-            sublabel: `${completedCount} completed`,
+            label: 'Avg session',
+            value: `${avgSessionMinutes}m`,
+            icon: Coffee,
           },
-          {
-            icon: Flame,
-            label: 'Streak',
-            value: `${streak}d`,
-            sublabel: streak > 0 ? 'Keep it up' : 'Start today',
-          },
-          {
-            icon: TrendingUp,
-            label: 'Completion',
-            value: `${adherence}%`,
-            sublabel: `~${formatMinutes(avgDailyMins)}/day avg`,
-          },
-        ].map((stat) => (
+        ].map(({ label, value, icon: Icon }) => (
           <div
-            key={stat.label}
-            className="stagger-item glass-surface rounded-xl p-3.5 transition-all"
+            key={label}
+            className="rounded-xl p-2.5 flex flex-col items-center gap-1"
+            style={{
+              background: 'rgba(255,255,255,0.03)',
+              border: '1px solid rgba(255,255,255,0.06)',
+            }}
           >
-            <div className="flex items-center gap-1.5 mb-2">
-              <stat.icon className="h-3 w-3 text-muted-foreground/60" />
-              <span className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
-                {stat.label}
-              </span>
-            </div>
-            <p className="text-xl font-bold text-primary tabular-nums m-0 leading-none">
-              {stat.value}
-            </p>
-            <p className="text-[10px] text-muted-foreground/50 m-0 mt-1">
-              {stat.sublabel}
-            </p>
+            <Icon className="w-3.5 h-3.5 text-primary/60" />
+            <span className="text-base font-semibold text-foreground tabular-nums">
+              {value}
+            </span>
+            <span className="text-[10px] text-muted-foreground/50">
+              {label}
+            </span>
           </div>
         ))}
       </div>
 
-      {/* Chart */}
-      <div className="glass-surface rounded-xl p-4">
-        <div className="flex items-center justify-between mb-3">
-          <span className="text-[13px] font-medium">Activity</span>
-          <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-            <span className="inline-flex items-center gap-1.5">
-              <span
-                className="inline-block w-2 h-2 rounded-full"
-                style={{ background: 'var(--primary)' }}
-              />
-              Focus {formatMinutes(totalFocusMins)}
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span
-                className="inline-block w-2 h-2 rounded-full"
-                style={{ background: 'var(--muted-foreground)' }}
-              />
-              Break {formatMinutes(totalBreakMins)}
-            </span>
-          </div>
-        </div>
-        <div className="w-full h-[200px]">
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={chartData} barGap={1}>
-              <CartesianGrid
-                strokeDasharray="3 3"
-                className="chart-grid"
-                vertical={false}
-              />
-              <XAxis
-                dataKey="day"
-                className="chart-axis"
-                tick={{ fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
-                interval={rangeDays > 7 ? 4 : 0}
-              />
-              <YAxis
-                className="chart-axis"
-                tickFormatter={(v) => `${v}m`}
-                tick={{ fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
-                width={36}
-              />
-              <Tooltip content={<CustomTooltip />} cursor={false} />
-              <Bar
-                dataKey="focus"
-                fill="var(--primary)"
-                radius={[4, 4, 0, 0]}
-                maxBarSize={rangeDays > 7 ? 12 : 24}
-              />
-              <Bar
-                dataKey="break"
-                fill="var(--muted-foreground)"
-                radius={[4, 4, 0, 0]}
-                opacity={0.4}
-                maxBarSize={rangeDays > 7 ? 12 : 24}
-              />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* Time by task — horizontal bars */}
-      {timeByTask.length > 0 && (
-        <div className="glass-surface rounded-xl p-4">
-          <span className="text-[13px] font-medium block mb-3">
-            Time by task
-          </span>
-          <div className="space-y-2.5">
-            {timeByTask.map(({ name, duration }) => {
-              const pct = (duration / maxTaskDuration) * 100;
-              return (
-                <div key={name}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-medium truncate max-w-[200px]">
-                      {name}
-                    </span>
-                    <span className="text-[11px] text-primary font-medium tabular-nums shrink-0 ml-2">
-                      {formatDuration(duration)}
-                    </span>
-                  </div>
-                  <div className="stat-bar">
-                    <div
-                      className="stat-bar-fill"
-                      style={{ width: `${pct}%` }}
+      {period !== 'allTime' && dailyData.length > 0 && (
+        <div className="mb-4">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground/40 font-medium mb-2">
+            Daily focus (minutes)
+          </p>
+          <div className="h-28">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={dailyData} barSize={20}>
+                <XAxis
+                  dataKey="day"
+                  tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.3)' }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis hide />
+                <Tooltip
+                  contentStyle={{
+                    background: 'rgba(18,18,24,0.95)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    borderRadius: 8,
+                    fontSize: 11,
+                    color: 'rgba(255,255,255,0.8)',
+                  }}
+                  formatter={(value: number | undefined) => [
+                    `${value ?? 0}m`,
+                    'Focus',
+                  ]}
+                  cursor={{ fill: 'rgba(255,255,255,0.03)' }}
+                />
+                <Bar dataKey="minutes" radius={[4, 4, 0, 0]}>
+                  {dailyData.map((entry, i) => (
+                    <Cell
+                      key={i}
+                      fill={
+                        entry.isToday
+                          ? '#0a84ff'
+                          : entry.minutes > 0
+                            ? 'rgba(10, 132, 255, 0.4)'
+                            : 'rgba(255,255,255,0.06)'
+                      }
                     />
-                  </div>
-                </div>
-              );
-            })}
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
           </div>
         </div>
       )}
 
-      {/* App Usage — horizontal bars */}
-      {trackAppUsage && appUsageByApp.length > 0 && (
-        <div className="glass-surface rounded-xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <Monitor className="h-3.5 w-3.5 text-muted-foreground/60" />
-              <span className="text-[13px] font-medium">App usage</span>
-            </div>
-            <span className="text-[11px] text-muted-foreground tabular-nums">
-              {formatDuration(totalAppSeconds)} tracked
-            </span>
+      <div className="grid grid-cols-2 gap-2 mb-4">
+        <div
+          className="rounded-xl p-3 flex items-center gap-2.5"
+          style={{
+            background: 'rgba(255,159,10,0.07)',
+            border: '1px solid rgba(255,159,10,0.15)',
+          }}
+        >
+          <Award
+            className="w-4 h-4 flex-shrink-0"
+            style={{ color: '#ff9f0a' }}
+          />
+          <div>
+            <p className="text-base font-semibold text-foreground">{streak}d</p>
+            <p className="text-[10px] text-muted-foreground/50">streak</p>
           </div>
-          <div className="space-y-2.5">
-            {appUsageByApp.map(({ name, duration }) => {
-              const pct = (duration / maxAppDuration) * 100;
-              const share =
-                totalAppSeconds > 0
-                  ? Math.round((duration / totalAppSeconds) * 100)
-                  : 0;
+        </div>
+
+        <div
+          className="rounded-xl p-3"
+          style={{
+            background: 'rgba(255,255,255,0.03)',
+            border: '1px solid rgba(255,255,255,0.06)',
+          }}
+        >
+          <p className="text-[10px] text-muted-foreground/50 mb-1.5">
+            Session moods
+          </p>
+          <div className="flex gap-2">
+            {moodCounts.great > 0 && (
+              <span className="text-xs">😊 {moodCounts.great}</span>
+            )}
+            {moodCounts.okay > 0 && (
+              <span className="text-xs">😐 {moodCounts.okay}</span>
+            )}
+            {moodCounts.rough > 0 && (
+              <span className="text-xs">😔 {moodCounts.rough}</span>
+            )}
+            {moodCounts.great + moodCounts.okay + moodCounts.rough === 0 && (
+              <span className="text-xs text-muted-foreground/30">No data</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {goalBreakdown.length > 0 && (
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground/40 font-medium mb-2">
+            Time by goal
+          </p>
+          <div className="flex flex-col gap-1.5">
+            {goalBreakdown.map(({ goal, minutes }) => {
+              const pct = totalMinutes > 0 ? (minutes / totalMinutes) * 100 : 0;
               return (
-                <div key={name}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-medium truncate max-w-[200px]">
-                      {name}
-                    </span>
-                    <div className="flex items-center gap-2 shrink-0 ml-2">
-                      <Badge
-                        variant="secondary"
-                        className="text-[10px] px-1.5 py-0 h-4 font-normal"
-                      >
-                        {share}%
-                      </Badge>
-                      <span className="text-[11px] text-primary font-medium tabular-nums">
-                        {formatDuration(duration)}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="stat-bar">
+                <div key={goal.id} className="flex items-center gap-2.5">
+                  <Target className="w-3 h-3 text-primary/50 flex-shrink-0" />
+                  <span className="text-xs text-muted-foreground/70 flex-1 truncate">
+                    {goal.name}
+                  </span>
+                  <span className="text-xs font-medium text-foreground tabular-nums">
+                    {minutes}m
+                  </span>
+                  <div className="w-16 h-1 rounded-full bg-white/[0.06] overflow-hidden">
                     <div
-                      className="stat-bar-fill"
+                      className="h-full rounded-full"
                       style={{
                         width: `${pct}%`,
-                        background:
-                          'linear-gradient(90deg, #5e5ce6, var(--primary))',
+                        background: 'linear-gradient(90deg, #0a84ff, #5e5ce6)',
                       }}
                     />
                   </div>
@@ -514,54 +406,50 @@ export default function ProgressScreen() {
         </div>
       )}
 
-      {/* Recent sessions */}
-      {recentSessions.length > 0 && (
-        <div className="glass-surface rounded-xl p-4">
-          <span className="text-[13px] font-medium block mb-3">
-            Recent sessions
-          </span>
-          <div className="space-y-0">
-            {recentSessions.map((s) => (
-              <div
-                key={s.id}
-                className="flex items-center gap-3 py-2.5 border-b border-border/30 last:border-b-0"
-              >
-                <div
-                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.type === 'focus' ? 'bg-primary' : 'bg-muted-foreground/50'}`}
-                />
-                <span className="text-xs font-medium min-w-[52px] tabular-nums">
-                  {formatDuration(s.duration)}
-                </span>
-                <span className="text-xs text-muted-foreground truncate flex-1">
-                  {s.taskName || '—'}
-                </span>
-                {s.type === 'focus' && s.completed === false && (
-                  <Badge
-                    variant="secondary"
-                    className="text-[10px] px-1.5 py-0 h-4 text-muted-foreground/60"
-                  >
-                    Stopped
-                  </Badge>
-                )}
-                <span className="text-[10px] text-muted-foreground/50 shrink-0 tabular-nums">
-                  {timeAgo(s.startTime)}
-                </span>
-              </div>
-            ))}
-          </div>
+      {totalSessions === 0 && (
+        <div className="flex flex-col items-center justify-center py-10 text-center">
+          <TrendingUp className="w-8 h-8 text-muted-foreground/20 mb-3" />
+          <p className="text-sm text-muted-foreground/50">
+            No sessions yet for this period.
+          </p>
+          <p className="text-xs text-muted-foreground/30 mt-1">
+            Start a focus session to see your stats here.
+          </p>
         </div>
       )}
 
-      {/* Empty state */}
-      {sessions.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-12 text-center">
-          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center mb-3">
-            <TrendingUp className="h-5 w-5 text-primary/60" />
+      {sharePreview && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-6"
+          style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)' }}
+          onClick={() => setSharePreview(null)}
+        >
+          <div
+            className="flex flex-col items-center gap-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img
+              src={sharePreview}
+              className="rounded-xl max-w-full"
+              style={{ maxHeight: '60vh' }}
+              alt="Stats card"
+            />
+            <div className="flex gap-3">
+              <button
+                onClick={handleDownload}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold bg-primary text-white border-0 cursor-pointer hover:bg-primary/90 transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                Save image
+              </button>
+              <button
+                onClick={() => setSharePreview(null)}
+                className="px-5 py-2.5 rounded-xl text-sm font-medium text-muted-foreground border border-white/[0.08] bg-transparent cursor-pointer hover:bg-white/[0.04] transition-colors"
+              >
+                Close
+              </button>
+            </div>
           </div>
-          <p className="text-sm text-muted-foreground m-0">No sessions yet</p>
-          <p className="text-xs text-muted-foreground/60 m-0 mt-1">
-            Complete your first focus session to see your progress
-          </p>
         </div>
       )}
     </div>

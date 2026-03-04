@@ -40,15 +40,27 @@ import {
   deleteTask,
   getSessions,
   addSession,
+  updateSession,
   setCurrentTaskName,
   setCurrentFocusGoalId,
   setUserPrefs,
   getUserPrefs,
   addAppUsageEntries,
   getAppUsage,
+  getLiveTimer,
+  setLiveTimer,
+  resetLiveTimer,
+  setOnboardingComplete,
 } from './store';
 import { startTracking, stopTracking } from './appTracker';
-import type { Goal, Task, Session, TimerStateUpdate } from '../types';
+import {
+  DEFAULT_LIVE_TIMER,
+  type Goal,
+  type Task,
+  type Session,
+  type TimerStateUpdate,
+  type LiveTimerState,
+} from '../types';
 
 class AppUpdater {
   constructor() {
@@ -120,6 +132,13 @@ ipcMain.handle('store:add-session', (_, session: Session) => {
   return getSessions();
 });
 ipcMain.handle(
+  'store:update-session',
+  (_, id: string, updates: Partial<Session>) => {
+    updateSession(id, updates);
+    return getSessions();
+  },
+);
+ipcMain.handle(
   'store:set-user-prefs',
   (
     _,
@@ -144,10 +163,128 @@ ipcMain.handle(
   },
 );
 
+ipcMain.handle('onboarding:complete', () => {
+  setOnboardingComplete();
+  return getAppState();
+});
+
 // Timer state sync: renderer → main (for tray + global shortcuts)
 ipcMain.handle('timer:state-update', (_, update: TimerStateUpdate) => {
   currentTimerState = update;
   updateTray();
+});
+
+function broadcastToAll(channel: string, data: unknown) {
+  if (dockWindow && !dockWindow.isDestroyed()) {
+    dockWindow.webContents.send(channel, data);
+  }
+  if (appWindow && !appWindow.isDestroyed()) {
+    appWindow.webContents.send(channel, data);
+  }
+}
+
+ipcMain.handle('live-timer:get', () => getLiveTimer());
+
+ipcMain.handle(
+  'live-timer:start',
+  (_, payload: { taskName: string; goalId?: string; goalName?: string }) => {
+    const newState: LiveTimerState = {
+      isActive: true,
+      status: 'running',
+      taskName: payload.taskName,
+      goalId: payload.goalId,
+      goalName: payload.goalName,
+      elapsed: 0,
+      breakElapsed: 0,
+      startedAt: Date.now(),
+      breaks: 0,
+      mode: 'focus',
+    };
+    setLiveTimer(newState);
+    broadcastToAll('live-timer:update', newState);
+    return newState;
+  },
+);
+
+ipcMain.handle('live-timer:pause', () => {
+  const current = getLiveTimer();
+  if (!current.isActive) return current;
+  const updated: LiveTimerState = { ...current, status: 'paused' };
+  setLiveTimer(updated);
+  broadcastToAll('live-timer:update', updated);
+  return updated;
+});
+
+ipcMain.handle('live-timer:resume', () => {
+  const current = getLiveTimer();
+  if (!current.isActive) return current;
+  const updated: LiveTimerState = {
+    ...current,
+    status: 'running',
+    mode: 'focus',
+  };
+  setLiveTimer(updated);
+  broadcastToAll('live-timer:update', updated);
+  return updated;
+});
+
+ipcMain.handle('live-timer:break', () => {
+  const current = getLiveTimer();
+  if (!current.isActive) return current;
+  const updated: LiveTimerState = {
+    ...current,
+    status: 'break',
+    mode: 'break',
+    breaks: current.breaks + 1,
+    breakElapsed: 0,
+  };
+  setLiveTimer(updated);
+  broadcastToAll('live-timer:update', updated);
+  return updated;
+});
+
+ipcMain.handle('live-timer:end-break', () => {
+  const current = getLiveTimer();
+  if (!current.isActive) return current;
+  const updated: LiveTimerState = {
+    ...current,
+    status: 'running',
+    mode: 'focus',
+  };
+  setLiveTimer(updated);
+  broadcastToAll('live-timer:update', updated);
+  return updated;
+});
+
+ipcMain.handle(
+  'live-timer:tick',
+  (_, elapsed: number, breakElapsed: number) => {
+    const current = getLiveTimer();
+    if (!current.isActive) return current;
+    const updated: LiveTimerState = { ...current, elapsed, breakElapsed };
+    setLiveTimer(updated);
+    if (appWindow && !appWindow.isDestroyed()) {
+      appWindow.webContents.send('live-timer:update', updated);
+    }
+    return updated;
+  },
+);
+
+ipcMain.handle('live-timer:stop', () => {
+  const current = getLiveTimer();
+  resetLiveTimer();
+  const resetState = { ...DEFAULT_LIVE_TIMER };
+  broadcastToAll('live-timer:update', resetState);
+  return current;
+});
+
+ipcMain.handle('live-timer:edit-task', (_, taskName: string) => {
+  const current = getLiveTimer();
+  if (!current.isActive) return current;
+  const updated: LiveTimerState = { ...current, taskName };
+  setLiveTimer(updated);
+  broadcastToAll('live-timer:update', updated);
+  return updated;
 });
 
 // Auto-launch
@@ -182,17 +319,30 @@ ipcMain.handle('app-tracking:get-data', () => {
 
 // Window: 2-window architecture - dock (small) + app (full)
 const DOCK_WIDTH_COLLAPSED = 56;
-const DOCK_WIDTH_OPTIONS = 140;
+const DOCK_WIDTH_OPTIONS = 240;
 const DOCK_HEIGHT_COLLAPSED = 56;
-const DOCK_HEIGHT_OPTIONS = 180;
+const DOCK_HEIGHT_OPTIONS = 520;
+const DOCK_WIDTH_TIMER_ACTIVE = 240;
+const DOCK_HEIGHT_TIMER_ACTIVE = 72;
 const APP_WIDTH = 440;
 const APP_HEIGHT = 780;
 const EDGE_MARGIN = 16;
 
-function getDockBounds(state: 'collapsed' | 'options') {
+function getDockBounds(state: 'collapsed' | 'options' | 'timer-active') {
   const workArea = screen.getPrimaryDisplay().workArea;
-  const w = state === 'options' ? DOCK_WIDTH_OPTIONS : DOCK_WIDTH_COLLAPSED;
-  const h = state === 'options' ? DOCK_HEIGHT_OPTIONS : DOCK_HEIGHT_COLLAPSED;
+  let w: number;
+  let h: number;
+  if (state === 'timer-active') {
+    w = DOCK_WIDTH_TIMER_ACTIVE;
+    h = DOCK_HEIGHT_TIMER_ACTIVE;
+  } else if (state === 'options') {
+    w = DOCK_WIDTH_OPTIONS;
+    h = DOCK_HEIGHT_OPTIONS;
+  } else {
+    w = DOCK_WIDTH_COLLAPSED;
+    h = DOCK_HEIGHT_COLLAPSED;
+  }
+  h = Math.min(h, workArea.height - 32);
   const x = workArea.x + workArea.width - w - EDGE_MARGIN;
   const y = workArea.y + (workArea.height - h) / 2;
   return { x, y, width: w, height: h };
@@ -214,6 +364,16 @@ ipcMain.handle('window:set-state', (_, state: 'collapsed' | 'options') => {
   return state;
 });
 
+ipcMain.handle(
+  'window:resize-dock',
+  (_, state: 'collapsed' | 'options' | 'timer-active') => {
+    if (!dockWindow) return;
+    const bounds = getDockBounds(state);
+    dockWindow.setBounds(bounds, true);
+    return bounds;
+  },
+);
+
 const getAssetPath = (...paths: string[]): string => {
   const RESOURCES_PATH = app.isPackaged
     ? path.join(process.resourcesPath, 'assets')
@@ -227,7 +387,8 @@ ipcMain.handle('window:open-secondary', async (_, route: string) => {
     appWindow.show();
     appWindow.focus();
     appWindow.webContents.send('navigate-to', route);
-    dockWindow?.hide();
+    const liveTimer = getLiveTimer();
+    if (!liveTimer.isActive) dockWindow?.hide();
     return;
   }
   appWindow = new BrowserWindow({
@@ -254,7 +415,8 @@ ipcMain.handle('window:open-secondary', async (_, route: string) => {
     if (appWindow) {
       appWindow.show();
       appWindow.webContents.send('navigate-to', route);
-      dockWindow?.hide();
+      const liveTimer = getLiveTimer();
+      if (!liveTimer.isActive) dockWindow?.hide();
     }
   });
   appWindow.on('closed', () => {

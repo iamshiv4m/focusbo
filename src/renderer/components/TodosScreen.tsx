@@ -20,6 +20,12 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { useStore } from '../store/useStore';
+import {
+  getUrgency,
+  formatDueDate,
+  urgencyColor,
+  sortByUrgency,
+} from '../lib/deadline';
 import type { Task, Note, Priority } from '../../types';
 
 function generateId() {
@@ -76,6 +82,7 @@ export default function TodosScreen() {
     useStore();
   const [showAddModal, setShowAddModal] = useState(false);
   const [newTodoName, setNewTodoName] = useState('');
+  const [newTodoDueDate, setNewTodoDueDate] = useState('');
   const [newTodoPriority, setNewTodoPriority] = useState<Priority>('none');
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingTaskName, setEditingTaskName] = useState('');
@@ -112,6 +119,13 @@ export default function TodosScreen() {
         .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0)),
     [tasks],
   );
+  const sortedActiveTasks = useMemo(
+    () => sortByUrgency(activeTasks),
+    [activeTasks],
+  );
+  const overdueCount = activeTasks.filter(
+    (t) => getUrgency(t.dueDate) === 'overdue',
+  ).length;
 
   const goalNameMap = useMemo(() => {
     const map: Record<string, string> = {};
@@ -126,9 +140,11 @@ export default function TodosScreen() {
       id: generateId(),
       name,
       notes: [],
+      dueDate: newTodoDueDate ? new Date(newTodoDueDate).getTime() : undefined,
       priority: newTodoPriority,
     });
     setNewTodoName('');
+    setNewTodoDueDate('');
     setNewTodoPriority('none');
     setShowAddModal(false);
   };
@@ -219,6 +235,22 @@ export default function TodosScreen() {
 
   return (
     <div className="flex flex-col gap-4 animate-fade-in-up">
+      {overdueCount > 0 && (
+        <div className="w-full px-1 mb-3">
+          <div
+            className="rounded-xl px-3 py-2 flex items-center gap-2"
+            style={{
+              background: 'rgba(255, 69, 58, 0.08)',
+              border: '1px solid rgba(255, 69, 58, 0.2)',
+            }}
+          >
+            <span className="text-xs font-medium" style={{ color: '#ff453a' }}>
+              {overdueCount} overdue task{overdueCount !== 1 ? 's' : ''}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="px-1">
         <div className="flex items-baseline justify-between">
@@ -261,7 +293,7 @@ export default function TodosScreen() {
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {activeTasks.map((task) => {
+          {sortedActiveTasks.map((task) => {
             const isExpanded = expandedId === task.id;
             const goalName = task.goalId ? goalNameMap[task.goalId] : null;
 
@@ -278,9 +310,29 @@ export default function TodosScreen() {
                       aria-label="Mark done"
                     />
                     <div className="flex-1 min-w-0">
-                      <p className="text-[14px] font-medium m-0 leading-snug break-words">
-                        {task.name}
-                      </p>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <p className="text-[14px] font-medium m-0 leading-snug break-words truncate">
+                          {task.name}
+                        </p>
+                        {task.dueDate &&
+                          (() => {
+                            const urgency = getUrgency(task.dueDate);
+                            const label = formatDueDate(task.dueDate);
+                            const color = urgencyColor(urgency);
+                            return (
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded-full font-medium flex-shrink-0"
+                                style={{
+                                  color,
+                                  background: `${color}18`,
+                                  border: `1px solid ${color}30`,
+                                }}
+                              >
+                                {label}
+                              </span>
+                            );
+                          })()}
+                      </div>
                       {(goalName ||
                         task.notes.length > 0 ||
                         (task.priority && task.priority !== 'none')) && (
@@ -564,6 +616,14 @@ export default function TodosScreen() {
                 />
                 <ListTodo className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50" />
               </div>
+
+              <input
+                type="date"
+                value={newTodoDueDate}
+                onChange={(e) => setNewTodoDueDate(e.target.value)}
+                className="h-9 rounded-xl bg-white/[0.05] border border-white/[0.08] text-xs text-muted-foreground px-2 outline-none focus:border-primary/40 transition-colors cursor-pointer w-full"
+                style={{ colorScheme: 'dark' }}
+              />
 
               <div className="flex items-center justify-between">
                 <p className="m-0 text-[11px] text-muted-foreground/70">

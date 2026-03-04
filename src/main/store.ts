@@ -7,8 +7,9 @@ import type {
   AppUsageEntry,
   WindowState,
   UserPrefs,
+  LiveTimerState,
 } from '../types';
-import { DEFAULT_USER_PREFS } from '../types';
+import { DEFAULT_USER_PREFS, DEFAULT_LIVE_TIMER } from '../types';
 
 const store = new Store({
   name: 'focusbo',
@@ -22,6 +23,8 @@ const store = new Store({
     theme: 'dark',
     windowState: 'collapsed',
     userPrefs: DEFAULT_USER_PREFS,
+    liveTimer: DEFAULT_LIVE_TIMER,
+    hasCompletedOnboarding: false,
   },
 });
 
@@ -43,6 +46,8 @@ export function getAppState(): AppState {
     theme: store.get('theme', 'dark') as 'dark' | 'light',
     windowState,
     userPrefs: getUserPrefs(),
+    liveTimer: getLiveTimer(),
+    hasCompletedOnboarding: hasCompletedOnboarding(),
   };
 }
 
@@ -125,6 +130,13 @@ export function addSession(session: Session): void {
   store.set('sessions', [...sessions, session]);
 }
 
+export function updateSession(id: string, updates: Partial<Session>): void {
+  const sessions = getSessions().map((s) =>
+    s.id === id ? { ...s, ...updates } : s,
+  );
+  store.set('sessions', sessions);
+}
+
 /* ── App Usage ── */
 
 export function getAppUsage(): AppUsageEntry[] {
@@ -190,4 +202,24 @@ export function getUserPrefs(): UserPrefs {
 export function setUserPrefs(prefs: Partial<UserPrefs>): void {
   const current = getUserPrefs();
   store.set('userPrefs', { ...current, ...prefs });
+}
+
+export function getLiveTimer(): LiveTimerState {
+  return store.get('liveTimer', DEFAULT_LIVE_TIMER) as LiveTimerState;
+}
+
+export function setLiveTimer(state: LiveTimerState): void {
+  store.set('liveTimer', state);
+}
+
+export function resetLiveTimer(): void {
+  store.set('liveTimer', DEFAULT_LIVE_TIMER);
+}
+
+export function setOnboardingComplete(): void {
+  store.set('hasCompletedOnboarding', true);
+}
+
+export function hasCompletedOnboarding(): boolean {
+  return store.get('hasCompletedOnboarding', false) as boolean;
 }
